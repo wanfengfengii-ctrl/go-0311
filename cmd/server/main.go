@@ -10,10 +10,8 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"time"
 
 	"unitized-curtainwall-silicone-hoist-gate/internal/api"
-	"unitized-curtainwall-silicone-hoist-gate/internal/domain"
 	"unitized-curtainwall-silicone-hoist-gate/internal/service"
 	"unitized-curtainwall-silicone-hoist-gate/internal/store"
 )
@@ -51,9 +49,20 @@ func main() {
 // entries. Because every business change commits atomically in SQLite, an
 // interrupted transaction is already rolled back; this step only clears
 // transient lease holds so a crash cannot block new work.
+//
+// The purge watermark is the high-water mark of the business logical clock
+// (the greatest logical_time across all committed evidence events), never
+// wall-clock time: leases are acquired and expired in the logical-clock
+// domain, so using a nanosecond wall-clock value here would delete every
+// lease on restart, discarding holds that are still within their business
+// validity window.
 func recover(st *store.Store) error {
 	return st.InTx(context.Background(), func(tx *store.Tx) error {
-		if err := tx.ExpiredLeases(domain.LogicalTime(time.Now().UnixNano())); err != nil {
+		watermark, err := tx.MaxLogicalTime()
+		if err != nil {
+			return err
+		}
+		if err := tx.ExpiredLeases(watermark); err != nil {
 			return err
 		}
 		incomplete, err := tx.IncompleteJournal()

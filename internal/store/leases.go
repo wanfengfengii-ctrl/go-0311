@@ -100,7 +100,28 @@ func (t *Tx) LeaseHolder(resourceType domain.ResourceType, resourceID string, at
 	return token, true, nil
 }
 
-// ExpiredLeases purges leases whose expiry has passed at the given time. It is
+// MaxLogicalTime returns the high-water mark of the business clock: the
+// greatest logical_time recorded across every committed evidence event. It is
+// the only clock domain in which leases are acquired and expired, so restart
+// recovery must purge leases against this watermark rather than wall-clock
+// time. With no events yet recorded it returns zero, leaving every lease (whose
+// expiry is likewise a logical time) to be judged on its own merits.
+func (t *Tx) MaxLogicalTime() (domain.LogicalTime, error) {
+	var lt sql.NullInt64
+	err := t.tx.QueryRow(`SELECT MAX(logical_time) FROM events`).Scan(&lt)
+	if err != nil {
+		return 0, err
+	}
+	if !lt.Valid {
+		return 0, nil
+	}
+	return domain.LogicalTime(lt.Int64), nil
+}
+
+// ExpiredLeases purges leases whose expiry has passed at the given time. The
+// watermark must be a logical time (the business clock), never wall-clock time:
+// leases are acquired and expired in the logical-clock domain, so comparing a
+// nanosecond wall-clock value here would delete every lease on restart. It is
 // invoked by the restart-recovery bootstrap so stale holds do not block new
 // work after a crash.
 func (t *Tx) ExpiredLeases(at domain.LogicalTime) error {
