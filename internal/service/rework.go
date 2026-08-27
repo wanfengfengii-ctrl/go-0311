@@ -149,6 +149,14 @@ func (s *Service) ReworkReinject(reworkID string, req ReinjectRequest) *domain.E
 		if !found {
 			return domain.NewError(domain.CodeNotFound, false, domain.Reason{Message: "rework not found"})
 		}
+		// A closed rework must not be re-injected. A timed-out client that
+		// resends the same reinject request would otherwise post a duplicate
+		// mass entry and a duplicate reinject event, double-counting the
+		// generation's base, catalyst and primer inputs.
+		if rw.Closed {
+			return domain.NewError(domain.CodeReworkGenerationConflict, false,
+				domain.Reason{Message: "rework already closed"})
+		}
 		if rw.CutoutDest == "" {
 			return domain.NewError(domain.CodeDependencyUnmet, false,
 				domain.Reason{Message: "cutout must be recorded before reinject"})
