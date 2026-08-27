@@ -156,8 +156,9 @@ func (s *Service) checkAdmission(tx *store.Tx, taskID string) *domain.Error {
 		}
 	}
 
-	// All reworks closed.
-	reworks, err := tx.ListReworks()
+	// All reworks on this task closed. Admission is scoped to the task's own
+	// reworks so an unrelated task's open rework cannot gate this hoist gate.
+	reworks, err := tx.ListReworksForTask(taskID)
 	if err != nil {
 		return txErr(err)
 	}

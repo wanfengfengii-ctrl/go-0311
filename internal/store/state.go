@@ -189,12 +189,49 @@ func (t *Tx) GetRework(caseID string) (domain.ReworkCase, bool, error) {
 	return rw, true, nil
 }
 
-// ListReworks returns reworks for a task ordered by case id.
+// ListReworks returns every rework case across all tasks, ordered by case id.
+// It backs the global reworks query; callers that need a single task's cases
+// must use ListReworksForTask so admission is not gated by other tasks'
+// open reworks.
 func (t *Tx) ListReworks() ([]domain.ReworkCase, error) {
 	rows, err := t.tx.Query(
 		`SELECT case_id, task_id, category, root_evidence, impact_summary, affected_json,
 		   cutout_mass, cutout_dest, new_generation, reinject_gen, closed
 		 FROM reworks ORDER BY case_id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.ReworkCase
+	for rows.Next() {
+		var rw domain.ReworkCase
+		var raw string
+		var cutout, ng, rg int64
+		var closed int
+		if err := rows.Scan(&rw.CaseID, &rw.TaskID, &rw.Category, &rw.RootEvidence, &rw.ImpactSummary, &raw,
+			&cutout, &rw.CutoutDest, &ng, &rg, &closed); err != nil {
+			return nil, err
+		}
+		rw.CutoutMass = domain.Milligrams(cutout)
+		rw.NewGeneration = domain.Generation(ng)
+		rw.ReinjectGen = domain.Generation(rg)
+		rw.Closed = closed != 0
+		if err := json.Unmarshal([]byte(raw), &rw.Affected); err != nil {
+			return nil, err
+		}
+		out = append(out, rw)
+	}
+	return out, rows.Err()
+}
+
+// ListReworksForTask returns the rework cases scoped to a single task, ordered
+// by case id. Admission checks use this so a task's hoist gate depends only on
+// its own reworks, not on another task's still-open cases.
+func (t *Tx) ListReworksForTask(taskID string) ([]domain.ReworkCase, error) {
+	rows, err := t.tx.Query(
+		`SELECT case_id, task_id, category, root_evidence, impact_summary, affected_json,
+		   cutout_mass, cutout_dest, new_generation, reinject_gen, closed
+		 FROM reworks WHERE task_id=? ORDER BY case_id ASC`, taskID)
 	if err != nil {
 		return nil, err
 	}
