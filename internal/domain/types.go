@@ -389,8 +389,12 @@ type TerminalDecision struct {
 	DecidedAt    LogicalTime  `json:"decided_at"`
 }
 
-// IdempotencyRecord caches a canonical response keyed by operation id.
+// IdempotencyRecord caches a canonical response keyed by operation id scoped to
+// the task the command targeted. An operation id reused against a different
+// task is a distinct operation and must not collide, so the effective key is
+// (task_id, operation_id) rather than operation_id alone.
 type IdempotencyRecord struct {
+	TaskID      string
 	OperationID string
 	Endpoint    string
 	RequestHash string

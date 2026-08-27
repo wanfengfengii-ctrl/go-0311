@@ -317,12 +317,15 @@ func (t *Tx) UpdateDeviceCall(c domain.DeviceCall) error {
 	return err
 }
 
-// GetIdempotency loads a cached idempotency record by operation id.
-func (t *Tx) GetIdempotency(operationID string) (domain.IdempotencyRecord, bool, error) {
+// GetIdempotency loads a cached idempotency record by operation id scoped to
+// the task the command targeted. The operation id is unique only within a task;
+// the same id reused against a different task is a distinct operation.
+func (t *Tx) GetIdempotency(taskID, operationID string) (domain.IdempotencyRecord, bool, error) {
 	var rec domain.IdempotencyRecord
 	err := t.tx.QueryRow(
-		`SELECT operation_id, endpoint, request_hash, response, event_range FROM idempotency WHERE operation_id=?`,
-		operationID).Scan(&rec.OperationID, &rec.Endpoint, &rec.RequestHash, &rec.Response, &rec.EventRange)
+		`SELECT task_id, operation_id, endpoint, request_hash, response, event_range
+		 FROM idempotency WHERE task_id=? AND operation_id=?`,
+		taskID, operationID).Scan(&rec.TaskID, &rec.OperationID, &rec.Endpoint, &rec.RequestHash, &rec.Response, &rec.EventRange)
 	if err == sql.ErrNoRows {
 		return rec, false, nil
 	}
@@ -332,12 +335,12 @@ func (t *Tx) GetIdempotency(operationID string) (domain.IdempotencyRecord, bool,
 	return rec, true, nil
 }
 
-// SaveIdempotency caches a canonical response keyed by operation id.
+// SaveIdempotency caches a canonical response keyed by (task id, operation id).
 func (t *Tx) SaveIdempotency(rec domain.IdempotencyRecord) error {
 	_, err := t.tx.Exec(
-		`INSERT INTO idempotency(operation_id, endpoint, request_hash, response, event_range)
-		 VALUES(?,?,?,?,?) ON CONFLICT(operation_id) DO NOTHING`,
-		rec.OperationID, rec.Endpoint, rec.RequestHash, rec.Response, rec.EventRange)
+		`INSERT INTO idempotency(task_id, operation_id, endpoint, request_hash, response, event_range)
+		 VALUES(?,?,?,?,?,?) ON CONFLICT(task_id, operation_id) DO NOTHING`,
+		rec.TaskID, rec.OperationID, rec.Endpoint, rec.RequestHash, rec.Response, rec.EventRange)
 	return err
 }
 

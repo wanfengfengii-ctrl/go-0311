@@ -162,11 +162,13 @@ CREATE TABLE IF NOT EXISTS terminals (
   PRIMARY KEY (task_id, generation)
 );
 CREATE TABLE IF NOT EXISTS idempotency (
-  operation_id TEXT PRIMARY KEY,
+  task_id      TEXT NOT NULL,
+  operation_id TEXT NOT NULL,
   endpoint     TEXT NOT NULL,
   request_hash TEXT NOT NULL,
   response     TEXT NOT NULL,
-  event_range  TEXT NOT NULL
+  event_range  TEXT NOT NULL,
+  PRIMARY KEY (task_id, operation_id)
 );
 CREATE TABLE IF NOT EXISTS tx_journal (
   txn_id     TEXT PRIMARY KEY,

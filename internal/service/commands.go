@@ -106,9 +106,12 @@ func (s *Service) SubmitCommand(taskID string, cmd Command) (CommandResult, *dom
 
 	var result CommandResult
 	derr := s.runTx(func(tx *store.Tx) *domain.Error {
-		// Idempotency: same operation id + same content returns the original
-		// result; different content conflicts.
-		if rec, found, err := tx.GetIdempotency(cmd.OperationID); err != nil {
+		// Idempotency: same operation id + same content against the SAME task
+		// returns the original result; different content conflicts. The
+		// operation id is scoped to this task, so an id reused against a
+		// different task (even with identical bytes) is a distinct operation
+		// and must run against that task's lock rather than replay the first.
+		if rec, found, err := tx.GetIdempotency(taskID, cmd.OperationID); err != nil {
 			return txErr(err)
 		} else if found {
 			if rec.RequestHash != hash {
@@ -169,12 +172,14 @@ func (s *Service) SubmitCommand(taskID string, cmd Command) (CommandResult, *dom
 			return derr
 		}
 
-		// Persist the idempotency record with the canonical response.
+		// Persist the idempotency record, scoped to this task so the same
+		// operation id reused against a different task cannot replay it.
 		respJSON, err := json.Marshal(result)
 		if err != nil {
 			return domain.NewError(domain.CodeInternal, false, domain.Reason{Message: "encode result"})
 		}
 		if err := tx.SaveIdempotency(domain.IdempotencyRecord{
+			TaskID:      taskID,
 			OperationID: cmd.OperationID,
 			Endpoint:    "commands",
 			RequestHash: hash,
