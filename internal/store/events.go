@@ -34,13 +34,16 @@ func (t *Tx) AppendEvent(ev domain.EvidenceEvent) (int64, string, error) {
 	if err != nil {
 		return 0, "", err
 	}
-	return seq, ev.PrevHash, nil
+	return seq, ev.PayloadHash, nil
 }
 
+// lastHash returns the hash of the newest persisted event of the aggregate —
+// the value the next event's prev_hash must point at so the chain stays
+// verifiable from the stored rows alone.
 func (t *Tx) lastHash(aggregateID string) (string, error) {
 	var h string
 	err := t.tx.QueryRow(
-		`SELECT prev_hash FROM events WHERE aggregate_id=? ORDER BY seq DESC LIMIT 1`,
+		`SELECT payload_hash FROM events WHERE aggregate_id=? ORDER BY seq DESC LIMIT 1`,
 		aggregateID).Scan(&h)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
