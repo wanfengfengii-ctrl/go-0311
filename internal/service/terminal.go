@@ -78,29 +78,37 @@ func (s *Service) DecideTerminal(taskID string, req TerminalRequest) (TerminalRe
 		if !ok {
 			return domain.NewError(domain.CodeNotFound, false, domain.Reason{Message: "task not locked"})
 		}
+		// A terminal decision, once formed, is final: later business-state
+		// changes (e.g. a rework registered after admission) must not reopen or
+		// alter it. Check for an existing decision before re-validating any
+		// admission condition, so a repeated terminal application returns the
+		// existing verdict instead of re-deriving DEPENDENCY_UNMET.
+		existing, alreadyDecided, err := tx.GetTerminal(taskID)
+		if err != nil {
+			return txErr(err)
+		}
+		if alreadyDecided {
+			out = TerminalResult{Type: existing.Type, Credential: existing.Credential,
+				DecidedAt: existing.DecidedAt, BarrierVer: existing.BarrierVer}
+			return domain.NewError(domain.CodeTerminalAlreadyDecided, false,
+				domain.Reason{Message: "terminal already decided"})
+		}
 		if req.Type == domain.TerminalHoistAdmitted {
 			if derr := s.checkAdmission(tx, taskID); derr != nil {
 				return derr
 			}
 		}
-		if _, ok, err := tx.GetTerminal(taskID); err != nil {
-			return txErr(err)
-		} else if ok {
-			return domain.NewError(domain.CodeTerminalAlreadyDecided, false,
-				domain.Reason{Message: "terminal already decided"})
-		}
-
-		credential := "HC-" + domain.CanonicalHash(taskID + ":" + req.Type.String())[:16]
+		credential := "HC-" + domain.CanonicalHash(taskID+":"+req.Type.String())[:16]
 		decision := domain.TerminalDecision{
 			Type: req.Type, Credential: credential,
 			EvidenceHash: domain.CanonicalHash(taskID), BarrierVer: 1, DecidedAt: req.LogicalTime,
 		}
-		decided, created, err := tx.SaveTerminal(taskID, decision)
+		prior, created, err := tx.SaveTerminal(taskID, decision)
 		if err != nil {
 			return txErr(err)
 		}
 		if !created {
-			decision = decided
+			decision = prior
 		}
 		_ = lock
 		out = TerminalResult{Type: decision.Type, Credential: decision.Credential,
