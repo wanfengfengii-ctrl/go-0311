@@ -40,8 +40,11 @@ func (s *Server) handleLeaseRelease(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, &req) {
 		return
 	}
-	go s.svc.ReleaseLease(req)
-	respond(w, nil, map[string]string{"status": "released"})
+	// Release synchronously so the response reflects the committed
+	// transaction outcome. A mismatched or expired token must surface as a
+	// conflict/expired error rather than a spurious "released", which would
+	// leave the original lease intact while misleading the caller.
+	respond(w, s.svc.ReleaseLease(req), map[string]string{"status": "released"})
 }
 
 func (s *Server) handleDeviceResult(w http.ResponseWriter, r *http.Request) {
