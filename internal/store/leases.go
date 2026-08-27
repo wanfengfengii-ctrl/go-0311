@@ -1,0 +1,109 @@
+package store
+
+import (
+	"database/sql"
+
+	"unitized-curtainwall-silicone-hoist-gate/internal/domain"
+)
+
+// AcquireLease holds a resource exclusively until expiry. A conflicting
+// unexpired lease held under a different token yields LEASE_CONFLICT; a
+// re-acquire under the same token is an idempotent no-op.
+func (t *Tx) AcquireLease(lease domain.ResourceLease) error {
+	var cur domain.ResourceLease
+	var found bool
+	var acq, exp int64
+	err := t.tx.QueryRow(
+		`SELECT token, holder_op, acquired_at, expires_at FROM leases
+		 WHERE resource_type=? AND resource_id=?`,
+		int64(lease.ResourceType), lease.ResourceID).Scan(&cur.Token, &cur.HolderOp, &acq, &exp)
+	switch {
+	case err == sql.ErrNoRows:
+		found = false
+	case err != nil:
+		return err
+	default:
+		cur.AcquiredAt = domain.LogicalTime(acq)
+		cur.ExpiresAt = domain.LogicalTime(exp)
+		found = true
+	}
+	if found && cur.ExpiresAt > lease.AcquiredAt && cur.Token != lease.Token {
+		return domain.NewError(domain.CodeLeaseConflict, false,
+			domain.Reason{Message: "resource already held"})
+	}
+	if found && cur.Token == lease.Token {
+		return nil
+	}
+	_, err = t.tx.Exec(
+		`INSERT INTO leases(resource_type, resource_id, token, holder_op, acquired_at, expires_at)
+		 VALUES(?,?,?,?,?,?)
+		 ON CONFLICT(resource_type, resource_id) DO UPDATE SET token=?, holder_op=?, acquired_at=?, expires_at=?`,
+		int64(lease.ResourceType), lease.ResourceID, lease.Token, lease.HolderOp,
+		int64(lease.AcquiredAt), int64(lease.ExpiresAt),
+		lease.Token, lease.HolderOp, int64(lease.AcquiredAt), int64(lease.ExpiresAt))
+	return err
+}
+
+// ReleaseLease frees a resource when the presented token matches and the lease
+// has not yet expired.
+func (t *Tx) ReleaseLease(resourceType domain.ResourceType, resourceID, token string, at domain.LogicalTime) error {
+	res, err := t.tx.Exec(
+		`DELETE FROM leases WHERE resource_type=? AND resource_id=? AND token=? AND expires_at>?`,
+		int64(resourceType), resourceID, token, int64(at))
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		var cur domain.ResourceLease
+		var exp int64
+		err := t.tx.QueryRow(
+			`SELECT token, expires_at FROM leases WHERE resource_type=? AND resource_id=?`,
+			int64(resourceType), resourceID).Scan(&cur.Token, &exp)
+		cur.ExpiresAt = domain.LogicalTime(exp)
+		if err == sql.ErrNoRows {
+			return domain.NewError(domain.CodeLeaseExpired, false,
+				domain.Reason{Message: "lease absent"})
+		}
+		if err != nil {
+			return err
+		}
+		if cur.Token != token {
+			return domain.NewError(domain.CodeLeaseConflict, false,
+				domain.Reason{Message: "token mismatch"})
+		}
+		return domain.NewError(domain.CodeLeaseExpired, false,
+			domain.Reason{Message: "lease expired"})
+	}
+	return nil
+}
+
+// LeaseHolder returns the current valid token for a resource at the given time.
+func (t *Tx) LeaseHolder(resourceType domain.ResourceType, resourceID string, at domain.LogicalTime) (string, bool, error) {
+	var token string
+	var exp int64
+	err := t.tx.QueryRow(
+		`SELECT token, expires_at FROM leases WHERE resource_type=? AND resource_id=?`,
+		int64(resourceType), resourceID).Scan(&token, &exp)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	if domain.LogicalTime(exp) <= at {
+		return "", false, nil
+	}
+	return token, true, nil
+}
+
+// ExpiredLeases purges leases whose expiry has passed at the given time. It is
+// invoked by the restart-recovery bootstrap so stale holds do not block new
+// work after a crash.
+func (t *Tx) ExpiredLeases(at domain.LogicalTime) error {
+	_, err := t.tx.Exec(`DELETE FROM leases WHERE expires_at<=?`, int64(at))
+	return err
+}
