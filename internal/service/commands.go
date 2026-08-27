@@ -374,13 +374,17 @@ func (s *Service) doInjectSegment(tx *store.Tx, taskID string, lock domain.Desig
 			domain.Reason{Joint: cmd.JointID, Segment: cmd.SegmentSeq, Message: "segment skipped ahead of prefix"})
 	}
 
-	// Deduct the in-joint mass carried by the command.
+	// Deduct the in-joint mass carried by the command. Either component
+	// overdraw must abort the whole transaction so no mass is deducted, the
+	// segment event is never appended and the valid prefix cannot grow.
 	if cmd.BaseMg > 0 || cmd.CatalystMg > 0 {
 		for _, e := range []domain.MassEntry{
 			{Generation: gen, Component: domain.ComponentBase, Direction: domain.MassOutput, Category: domain.MassInJoint, Amount: cmd.BaseMg, Evidence: cmd.OperationID},
 			{Generation: gen, Component: domain.ComponentCatalyst, Direction: domain.MassOutput, Category: domain.MassInJoint, Amount: cmd.CatalystMg, Evidence: cmd.OperationID},
 		} {
-			_ = tx.PostMass(e)
+			if err := tx.PostMass(e); err != nil {
+				return txErr(err)
+			}
 		}
 	}
 
